@@ -1,0 +1,103 @@
+/* ==========================================================================
+   1. TUFTE EGGSHELL BACKGROUND & TYPOGRAPHY
+   ========================================================================== */
+body {
+  background-color: #fbf8f0 !important; /* Classic Eggshell / Cream */
+  color: #111111;
+}
+
+.margin-note, .sidenote {
+  font-size: 0.85rem;
+  line-height: 1.3;
+  color: #555555;
+}
+
+/* ==========================================================================
+   2. TOC TRANSPARENCY & MONOSPACE TYPOGRAPHY
+   ========================================================================== */
+/* Align TOC panel and layout containers with background theme */
+#quarto-margin-sidebar,
+#quarto-sidebar,
+nav#TOC,
+.sidebar,
+.margin-sidebar,
+#quarto-content,
+#quarto-document-content,
+main.content {
+  background-color: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+/* Ensure TOC items don't inherit white fills and use a monospace font */
+nav#TOC ul,
+nav#TOC li,
+nav#TOC a,
+.sidebar nav[role="doc-toc"],
+.sidebar nav[role="doc-toc"] ul li a {
+  background-color: transparent !important;
+  font-family: "Courier New", Courier, monospace !important;
+  font-size: 0.85rem !important;
+}
+
+/* Keep the TOC persistent on scroll */
+#quarto-margin-sidebar,
+#quarto-sidebar {
+  position: sticky !important;
+  top: 20px !important;
+  max-height: 90vh !important;
+  overflow-y: auto !important;
+}
+
+/* ==========================================================================
+   3. MAP CONTAINERS & MARGIN BOUNDINGS
+   ========================================================================== */
+/* Ensure Leaflet/Folium map containers fit column bounds cleanly */
+.leaflet,
+.folium-map,
+div.html-widget {
+  max-width: 100% !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  border: 1px solid #dcd7c9;
+  border-radius: 6px;
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
+/* Prevent iframe map overflows */
+iframe {
+  max-width: 100% !important;
+}
+
+/* ==========================================================================
+   4. FORCE GRID LAYOUT & MAP CONTAINMENT FOR TOC PERSISTENCE
+   ========================================================================== */
+/* Keep Quarto's main grid column constrained so it never expands over the sidebar */
+.page-columns .content,
+main.content,
+#quarto-content {
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+/* Force iframe, Folium, and Leaflet containers to strictly respect parent column width */
+.cell-output-display,
+.html-widget,
+.folium-map,
+.leaflet,
+iframe {
+  max-width: 100% !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  clear: both;
+}
+
+/* Prevent Quarto's responsive breakpoint from collapsing the TOC sidebar */
+@media (min-width: 992px) {
+  #quarto-margin-sidebar,
+  #quarto-sidebar {
+    display: block !important;
+    visibility: visible !important;
+  }
+}

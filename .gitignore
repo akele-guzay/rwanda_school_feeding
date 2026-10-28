@@ -1,0 +1,16 @@
+
+# Quatro execusion files and notebooks
+/.quarto/
+**/*.quarto_ipynb
+*_cache/
+*_files/
+
+# Python & Environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db

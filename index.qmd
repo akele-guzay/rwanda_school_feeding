@@ -1,0 +1,711 @@
+---
+title: "Rwanda Centralized School Feeding Kitchen Placement Analysis"
+subtitle: "Spatial Analysis for Central Kitchen Network Using a 40-Minute Drive Time Threshold"
+author: "Agazi Fitsum, MD"
+date: last-modified
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    theme: flatly
+    code-fold: true
+    embed-resources: false
+    page-layout: article
+    css: styles.css
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import os
+import pandas as pd
+import geopandas as gpd
+
+# Load GPKG layers for table generation within Quarto
+GPKG_PATH = "./data/results_90K_40mins.gpkg"
+try:
+    gdf_kitchens = gpd.read_file(GPKG_PATH, layer="kitchens_40")
+    gdf_schools = gpd.read_file(GPKG_PATH, layer="schools_40")
+    gdf_corridors = gpd.read_file(GPKG_PATH, layer="corridors_40")
+except Exception as e:
+    gdf_kitchens, gdf_schools, gdf_corridors = None, None, None
+
+```
+
+## Executive Summary
+
+```{python}
+#| label: exec-summary-stats
+#| include: false
+
+# Live calculations for Executive Summary
+n_kitchens = len(gdf_kitchens) if gdf_kitchens is not None else 0
+n_schools = len(gdf_schools) if gdf_schools is not None else 0
+total_meals = int(gdf_schools['demand'].sum()) if gdf_schools is not None else 0
+
+# Typology counts & percentages
+n_school_based = len(gdf_kitchens[gdf_kitchens['ctype'] == 'school']) if gdf_kitchens is not None else 0
+n_standalone = n_kitchens - n_school_based
+pct_school_based = (n_school_based / n_kitchens) * 100 if n_kitchens > 0 else 0
+pct_standalone = (n_standalone / n_kitchens) * 100 if n_kitchens > 0 else 0
+
+# Size Band counts
+n_large = len(gdf_kitchens[gdf_kitchens['size_band'] == 'large']) if gdf_kitchens is not None else 0
+n_medium = len(gdf_kitchens[gdf_kitchens['size_band'] == 'medium']) if gdf_kitchens is not None else 0
+n_small = len(gdf_kitchens[gdf_kitchens['size_band'] == 'small']) if gdf_kitchens is not None else 0
+
+pct_large = (n_large / n_kitchens) * 100 if n_kitchens > 0 else 0
+pct_medium = (n_medium / n_kitchens) * 100 if n_kitchens > 0 else 0
+pct_small = (n_small / n_kitchens) * 100 if n_kitchens > 0 else 0
+
+median_meals = int(gdf_kitchens['meals_day'].median()) if gdf_kitchens is not None else 0
+
+# Drive times
+mean_drive_time = gdf_schools['time_min'].mean() if gdf_schools is not None else 0.0
+p95_drive_time = gdf_schools['time_min'].quantile(0.95) if gdf_schools is not None else 0.0
+drive_buffer = 40.0 - mean_drive_time
+
+# Corridor stats
+valid_c = gdf_corridors[gdf_corridors['corridor'] != -1] if gdf_corridors is not None else None
+k_node_col = 'kitchen_node' if valid_c is not None and 'kitchen_node' in valid_c.columns else 'kitchen_id'
+
+if valid_c is not None and len(valid_c) > 0:
+    c_per_k = valid_c.groupby(k_node_col)['corridor'].nunique()
+    k_3_5_cnt = int(((c_per_k >= 3) & (c_per_k <= 5)).sum())
+    k_3_5_pct = (k_3_5_cnt / n_kitchens) * 100
+    total_corridors_cnt = len(valid_c[[k_node_col, 'corridor']].drop_duplicates())
+    route_reduction_pct = ((n_schools - total_corridors_cnt) / n_schools) * 100 if n_schools > 0 else 0
+else:
+    k_3_5_cnt, k_3_5_pct, total_corridors_cnt, route_reduction_pct = 0, 0.0, 0, 0.0
+
+# Pre-formatted string variables for safe inline rendering
+s_n_kitchens = str(n_kitchens)
+s_n_schools = f"{n_schools:,}"
+s_total_meals = f"{total_meals:,}"
+s_pct_school_based = f"{pct_school_based:.1f}%"
+s_n_school_based = str(n_school_based)
+s_pct_standalone = f"{pct_standalone:.1f}%"
+s_n_standalone = str(n_standalone)
+s_pct_large = f"{pct_large:.1f}%"
+s_n_large = str(n_large)
+s_pct_medium = f"{pct_medium:.1f}%"
+s_n_medium = str(n_medium)
+s_pct_small = f"{pct_small:.1f}%"
+s_n_small = str(n_small)
+s_median_meals = f"{median_meals:,}"
+s_mean_drive_time = f"{mean_drive_time:.1f}"
+s_p95_drive_time = f"{p95_drive_time:.1f}"
+s_drive_buffer = f"{drive_buffer:.1f}"
+s_total_corridors_cnt = f"{total_corridors_cnt:,}"
+s_route_reduction_pct = f"{route_reduction_pct:.1f}%"
+s_k_3_5_pct = f"{k_3_5_pct:.1f}%"
+s_k_3_5_cnt = str(k_3_5_cnt)
+
+```
+
+
+### Introduction & Overview
+This report evaluates the spatial distribution, facility capacity, transit logistics, and operational feasibility for establishing a central kitchen network across Rwanda under a *40-minute drive time threshold*. Conducted as part of the broader feasibility assessment for the *National School Feeding Program (NSFP)*, this study provides a data-driven spatial framework to guide capital investment, site selection, and route optimization for school meal distribution.
+
+### Methodology
+The analysis employs a two-stage hierarchical spatial optimization model:
+
+  1. *Facility Location Minimization:* Identifies the minimum number of central kitchens required to achieve 100% geographic coverage within 40 minutes of all supported schools.
+  2. *Network Distance Minimization:* Optimizes school-to-kitchen assignments to minimize overall system transit distance.
+
+Drive-time calculations utilize OpenStreetMap (OSM) road network data enriched with realistic speed constraints. Unpaved feeder roads are capped at *25 km/h*, and terrain grade penalties are applied to road segments exceeding 5% slope (reducing heavy commercial vehicle speeds by up to 65% on steep uphill gradients). Delivery routes are aggregated into directional *transit corridors* using polar angular bearings ($\theta \in [0^\circ, 360^\circ]$) from kitchen origins, adapting classic Sweep Algorithm heuristics to model synchronized supply runs.
+
+### Main Findings
+
+* *Network Scale & Typology:* Achieving national coverage within the 40-minute threshold requires *`{python} s_n_kitchens` central kitchens* serving *`{python} s_n_schools` schools* (`{python} s_total_meals` daily meals). The network reflects a balanced structural split: *`{python} s_pct_school_based`* (*n = `{python} s_n_school_based`*) are school-based facilities co-located at existing educational sites, while *`{python} s_pct_standalone`* (*n = `{python} s_n_standalone`*) operate as standalone centralized facilities.
+* *Facility Capacity Distribution:* Facilities are categorized across three operational bands: Large ($70,001\text{-}100,000\text{ meals/day}$) facilities serve as the primary network backbone, representing *`{python} s_pct_large`* (*n = `{python} s_n_large`*) of all kitchens, followed by Medium ($30,001\text{-}70,000\text{ meals/day}$) facilities at *`{python} s_pct_medium`* (*n = `{python} s_n_medium`*), and Small ($10,000\text{-}30,000\text{ meals/day}$) facilities at *`{python} s_pct_small`* (*n = `{python} s_n_small`*). The median facility size across the network is *`{python} s_median_meals` meals/day*.
+* *Transit Performance & Buffer:* The average drive time from a central kitchen to an assigned school is *`{python} s_mean_drive_time` minutes*, with a 95th percentile drive time of *`{python} s_p95_drive_time` minutes*. This yields an average *`{python} s_drive_buffer`-minute operational buffer* for site loading, local traffic variance, and off-grid access delays.
+* *Corridor Efficiency:* Grouping school deliveries into *`{python} s_total_corridors_cnt`* consolidated directional transit corridors reduces individual dispatch legs by *`{python} s_route_reduction_pct`* across the national network compared to point-to-point routing. Exactly *`{python} s_k_3_5_pct`* (*n = `{python} s_k_3_5_cnt`*) of all central kitchens operate efficiently using 3 to 5 primary corridors.
+
+### Implications
+* *Fleet & Logistics Optimization:* Utilizing corridor-based supply runs significantly reduces required fleet size, fuel consumption, and vehicle maintenance costs while enabling predictable delivery schedules.
+* *Phased Capital Investment:* Infrastructure development could prioritize the `{python} s_n_large` large-scale central facilities that supply nearly half the national meal volume, establishing core regional supply hubs before scaling smaller feeder kitchens. However, based on the capacity of Solid Africa, there might be benefits to establishing some of the medium and small kitchens as proof of concepts before transitioning to the larger sized kitchens.
+* *Ground Verification Requirement:* These figures represent a baseline scenario based on available data. Approximately 300 schools lack verified coordinates in national databases and require field validation. Additionally, facilities serving schools snapped >1,000 meters from mapped roads (e.g., in remote sectors) require localized road access surveys prior to finalizing dispatch schedules. @tbl-snapped-schools
+
+
+## Methodology
+
+This assessment was conducted as a sub-component of the broader feasibility study on centralized kitchen models for Rwanda's National School Feeding Program (NSFP). The methodology below details the spatial optimization and drive-time analysis used to determine kitchen placement and network configuration. It is intended to be read alongside the parent study protocol, which provides the wider framing for this work.
+
+### Analytical Approach
+
+The aim of this analysis was to determine, given a maximum drive time of *40 minutess* from any school to its serving kitchen, the smallest number of kitchens required, where they should be located, and how schools should be assigned to them. This was tackled through two sequencial steps: 
+
+  1. First, find the smallest possible set of kitchen sites such that every school is within the promised drive time of at least one site.
+  2. Second, among all configurations that achieve that minimum kitchen count, select the one with the least total driving distance across the entire network.
+
+Candidate kitchen sites comprised two categories: (a) existing schools, which are already embedded in the settlement pattern and may have available land or infrastructure; and (b) a systematic grid of points distributed across the road network.
+
+Finally, for operational purposes, the largest kitchen size was restricted to *70,001 - 100,000 meals/day*. 
+
+### Drive Time Model
+
+Drive times were calculated using simulated truck transport along Rwanda's road network. Since standalone road network wasn't provided by Rwanda's transport authority, the analysis utilized OpenStreetMap's (OSM) network. Additionally, the analysis targeted a drive time threshold of 40 minutes. Under ideal conditions, the Solid Africa team aims to deliver meals within 50 minutes; however, due to limitations of the underlying spatial road network, the threshold was set to 40 minutes to provide a 10-minute operational buffer for traffic, unverified road conditions, and local access delays.
+
+::: {.column-margin}
+[OpenStreetMap](https://www.openstreetmap.org/about) provides data under the [Open Data Commons Open Database License (ODbL)](https://www.google.com/search?q=https://www.openstreetmap.org/copyright/). The platform sources information from community contributions. As such, basic road attributes or recent infrastructure changes may be incomplete in certain regions. These limitations should be kept in mind when reviewing routing metrics.
+:::
+
+Using the OSM road network, three core mechanics determined effective vehicle speeds across all network edges:
+
+1. *Road Classification & Speed Caps:* Baseline speeds were assigned according to official administrative road designations. In addition, minor road classifications carried a default unpaved assumption and were capped at *25 km/h* as detailed in @tbl-road-classes.
+
+::: {.column-margin}
+World Bank Group / Transport Research Laboratory (TRL). HDM-4: Highway Development and Management Model (Volume 4: Calibration and Adaptation). HDM-4 surface roughness models demonstrate that vehicle operating speeds on unpaved/gravel rural roads in East Africa drop by 40%–60% due to surface distress, gravel loss, and washboarding, establishing $20\text{-}30\text{ km/h}$ as the standard design baseline for heavy commercial freight.
+
+:::
+
+```{python}
+#| label: tbl-road-classes
+#| tbl-cap: "Road Classification Base Speeds and Unpaved Speed Constraints"
+#| echo: false
+
+import pandas as pd
+from IPython.display import display, HTML
+
+road_classes = pd.DataFrame({
+    "Road Class Designation": [
+        "Motorway",
+        "Trunk",
+        "Primary",
+        "Secondary",
+        "Tertiary",
+        "Unclassified",
+        "Residential",
+        "Service",
+        "Track"
+    ],
+    "Base Speed (km/h)": [70, 60, 60, 50, 40, 30, 30, 20, 15],
+    "Assumed Max Unpaved Speed (km/h)": [70, 60, 60, 50, 25, 25, 25, 20, 15]
+})
+
+display(HTML(road_classes.to_html(index=False, classes="table table-striped table-hover table-sm")))
+
+```
+
+2. *Terrain & Grade Penalties:* Elevation differences derived from digital elevation models introduced speed penalties on grades above 5%:
+* *Uphill Penalty:* Speed decreased by *0.08* per percentage point above 5% grade, bounded by a lower floor multiplier of *0.35* (~65% reduction).
+* *Downhill Penalty:* Speed decreased by *0.05* per percentage point above 5% grade, bounded by a lower floor multiplier of *0.50* (50% reduction).
+
+::: {.column-margin}
+
+Highway Capacity Manual (HCM 2010), Transportation Research Board (TRB). The Highway Capacity Manual (HCM) establishes heavy vehicle weight-to-power speed reductions on sustained grades over 4%–5%, matching the 5% threshold used in this model.
+
+:::
+
+``` {python}
+
+#| label: fig-terrain-penalties
+#| echo: false
+#| output: asis
+
+from IPython.display import IFrame
+IFrame(src="./output/terrain_penalties.html", width="100%", height=480)
+
+```
+
+### Transit Corridors & Cluster Partitioning
+
+To translate point-to-point shortest paths into structured delivery logistics, assigned school routes surrounding each central kitchen were partitioned into directional *transit corridors*. 
+
+Corridors represent radial catchment vectors along primary and secondary access roads. Rather than dispatching delivery vehicles independently to individual schools, routes are grouped using angular bearings ($\theta \in [0^\circ, 360^\circ]$) from the kitchen origin and network edge connectivity. This clustering models synchronized supply runs where single delivery vehicles service consecutive schools along a shared road corridor before returning to the central facility.
+
+::: {.column-margin}
+*Methodological Reference*  
+The angular sectoring approach adapts Gillett & Miller's (1974) *Sweep Algorithm* for depot-centric vehicle routing, clustering nodes by polar angle $\theta$ relative to the central facility origin.
+
+---
+
+*Other References*  
+
+Min, H. (1989). The Multiple Vehicle Routing Problem with Backhauls: A Case Study. European Journal of Operational Research, 43(3), 281–295.
+
+Bodin, L., & Berman, L. (1979). Routing and scheduling of school buses by computer. Transportation Research Part A: General, 13(2), 113–129.
+
+
+:::
+
+
+## Results
+
+### Network Key Performance Indicators
+
+The summary below highlights network coverage metrics derived from the spatial analysis. The 40-min drive time model resulted in 61 kitchens, with an almost 50-50 distribution of kitchens between school-based and independent sites. 
+
+```{python}
+#| label: tbl-kpis
+#| echo: false
+#| tbl-cap: "Overall Network Performance Summary"
+
+if gdf_kitchens is not None and gdf_schools is not None:
+    kpi_data = pd.DataFrame([{
+        "Total Central Kitchens": len(gdf_kitchens),
+        "School-Based Kitchens": len(gdf_kitchens[gdf_kitchens['ctype'] == 'school']),
+        "Independent Kitchens": len(gdf_kitchens[gdf_kitchens['ctype'] != 'school']),
+        "Total Schools Served": len(gdf_schools),
+        "Total Student Meals/Day": f"{int(gdf_schools['demand'].sum()):,}",
+        "Mean Drive Time (min)": f"{gdf_schools['time_min'].mean():.1f}",
+        "95th Percentile Drive Time (min)": f"{gdf_schools['time_min'].quantile(0.95):.1f}",
+        "Max Drive Time (min)": f"{gdf_schools['time_min'].max():.1f}"
+    }])
+    from IPython.display import display, HTML
+    display(HTML(kpi_data.to_html(index=False, classes="table table-striped table-hover")))
+
+```
+
+### Visualizations
+
+#### School Drive Time Distribution
+
+The interactive histogram below details the drive times from central kitchens to assigned schools, showcasing the compliance with the 40-minute drive time threshold.
+
+```{python}
+#| label: fig-drive-time-dist
+#| echo: false
+#| output: asis
+
+from IPython.display import IFrame
+IFrame(src="./output/drive_time_dist.html", width="100%", height=480)
+
+```
+
+#### Kitchen Capacity & Meal Demand
+
+The scatter plot below compares daily meal volume demands against the number of schools served per kitchen facility. For operational purposes schools were classified as small (*10,000 - 30,0000 meals/day*), medium (*30,001 - 70,000 meals/day*), and large (*70,001 - 100,000 meals/day*). Based on this classifcation, the analysis resulted in *`{python} s_pct_small`* (*n = `{python} s_n_small`*) small sized kitchens, *`{python} s_pct_medium`* (*n = `{python} s_n_medium`*) medium sized kitchens, and *`{python} s_pct_large`* (*n = `{python} s_n_large`*) large sized kitchens.
+
+```{python}
+#| label: fig-kitchen-capacity
+#| echo: false
+#| output: asis
+
+from IPython.display import IFrame
+IFrame(src="./output/kitchen_capacity.html", width="100%", height=480)
+```
+
+### Interactive Spatial Dashboards
+
+#### General Overview
+
+This interactive map below displays all supported schools, central kitchen nodes, and delivery transit corridors across Rwanda.
+
+::: {.column-page}
+
+```{python}
+#| label: map-primary-macro
+#| echo: false
+#| output: asis
+
+from IPython.display import IFrame
+from IPython.display import display, HTML
+
+display(HTML('<iframe src="./output/40min_interactive_map_schools_kitchens.html" width="100%" height="580px" style="border:none;" loading="lazy"></iframe>'))
+
+```
+
+:::
+
+#### Corridor Overview
+
+The interactive map below allows filtering of delivery routes and supporting school clusters broken down by individual kitchen network corridors.
+
+```{python}
+#| label: corridor-findings-text
+#| echo: false
+#| output: asis
+
+from IPython.display import display, HTML
+
+# Execute actual stats from GeoDataFrame
+valid_c = gdf_corridors[gdf_corridors['corridor'] != -1]
+k_node_col = 'kitchen_node' if 'kitchen_node' in valid_c.columns else 'kitchen_id'
+
+c_per_k = valid_c.groupby(k_node_col)['corridor'].nunique()
+k_3_5_cnt = ((c_per_k >= 3) & (c_per_k <= 5)).sum()
+k_3_5_pct = (k_3_5_cnt / len(gdf_kitchens)) * 100 if gdf_kitchens is not None else 0.0
+
+total_schools_cnt = len(gdf_schools) if gdf_schools is not None else 0
+total_corridors_cnt = len(valid_c[[k_node_col, 'corridor']].drop_duplicates())
+route_reduction_pct = ((total_schools_cnt - total_corridors_cnt) / total_schools_cnt) * 100 if total_schools_cnt > 0 else 0.0
+
+findings_html = f"""
+<div style="background-color: transparent; border-left: 3px solid #2b5c8f; padding-left: 12px; margin-top: 10px; margin-bottom: 20px; font-size: 13px;">
+    <b>Key Corridor Logistics Findings:</b>
+    <ul style="margin-top: 5px; margin-bottom: 5px; padding-left: 20px;">
+        <li><i>Radial Catchment Distribution:</i> Exactly <b>{k_3_5_pct:.1f}%</b> (<i>n = {k_3_5_cnt}</i>) of central kitchens exhibit 3 to 5 primary transit corridors radiating outward along major roadway arteries.</li>
+        <li><i>Route Consolidation Efficiency:</i> Aggregating <b>{total_schools_cnt:,}</b> individual school deliveries into <b>{total_corridors_cnt:,}</b> consolidated directional corridors achieves a <b>{route_reduction_pct:.1f}%</b> reduction in distinct dispatch legs compared to unclustered point-to-point routing.</li>
+    </ul>
+</div>
+"""
+
+display(HTML(findings_html))
+
+```
+::: {column-page}
+
+```{python}
+#| label: map-corridors
+#| echo: false
+#| output: asis
+
+from IPython.display import IFrame
+from IPython.display import display, HTML
+
+display(HTML('<iframe src="./output/40min_interactive_map_corridors.html" width="100%" height="580px" style="border:none;" loading="lazy"></iframe>'))
+
+```
+
+:::
+
+
+### Kitchen Typology
+
+The following table summarizes kitchen distribution by size, location, and other factors.
+
+```{python}
+#| label: tbl-kitchen-summary
+#| echo: false
+#| tbl-cap: "Kitchen Breakdown by Typology and Size Class"
+
+if gdf_kitchens is not None:
+    for gdf in [gdf_kitchens]:
+        if 'fid' not in gdf.columns:
+            gdf['fid'] = gdf.index
+
+    k_summary = gdf_kitchens.groupby(['ctype', 'size_band']).agg(
+        kitchen_count=('fid', 'count'),
+        total_schools=('n_schools', 'sum'),
+        total_meals=('meals_day', 'sum'),
+        avg_drive_min=('mean_time_min', 'mean')
+    ).reset_index()
+    
+    k_summary['total_meals'] = k_summary['total_meals'].apply(lambda x: f"{int(x):,}")
+    k_summary['avg_drive_min'] = k_summary['avg_drive_min'].apply(lambda x: f"{x:.1f}")
+    
+    k_summary.columns = ['Typology', 'Size Band', 'Kitchen Count', 'Total Schools', 'Daily Meals', 'Avg Drive Time (min)']
+    display(HTML(k_summary.to_html(index=False, classes="table table-bordered table-sm")))
+
+```
+
+### Kitchens and Corridors
+
+This section provides localized geographic and operational profiles for all central kitchens in the network, detailed by their administrative location, serving capacity, and radial transport corridors. Please use the drop down to focus on specific kitchens.
+
+
+```{python}
+#| label: kitchen-profiles-generator
+#| echo: false
+#| output: asis
+
+import os
+import json
+import base64
+import pandas as pd
+from IPython.display import display, HTML
+
+PROFILES_JSON_PATH = "./output/profiles/kitchen_profiles.json"
+
+def file_to_base64(filepath):
+    """Converts local image file to base64 data URI string."""
+    if filepath and os.path.exists(filepath):
+        ext = os.path.splitext(filepath)[1].lower().replace('.', '')
+        mime_type = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
+        with open(filepath, "rb") as image_file:
+            encoded = base64.b64encode(image_file.read()).decode('utf-8')
+            return f"data:{mime_type};base64,{encoded}"
+    return ""
+
+if os.path.exists(PROFILES_JSON_PATH):
+    with open(PROFILES_JSON_PATH, "r", encoding="utf-8") as f:
+        profiles = json.load(f)
+
+    profile_data = {}
+    options_html = ""
+    first_profile = None
+
+    for idx, k in enumerate(profiles):
+        kid = k.get("kitchen_id", idx)
+        codename = k.get("codename", f"Kitchen {kid}")
+        key = f"k-{kid}"
+        
+        if idx == 0:
+            options_html += f'<option value="{key}" selected>{codename}</option>'
+        else:
+            options_html += f'<option value="{key}">{codename}</option>'
+
+        corridors = k.get("corridors") or []
+        if corridors and len(corridors) > 0:
+            rows_html = ""
+            schools_table_html = ""
+
+            for c in corridors:
+                c_id = c.get("Corridor ID", "")
+                c_schools = c.get("Schools", 0)
+                c_demand = f"{c.get('Daily Demand', 0):,}"
+                c_bearing = c.get("Avg Bearing (°)", 0.0)
+
+                rows_html += f"""
+                <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding: 4px 0; font-size: 11px;">
+                    <span style="font-weight: 600; color: #334155;">{c_id}</span>
+                    <span>{c_schools} schools</span>
+                    <span>{c_demand} meals</span>
+                    <span style="color: #64748b;">{c_bearing}°</span>
+                </div>
+                """
+
+                sch_details = c.get("school_details") or []
+                for s in sch_details:
+                    schools_table_html += f"""
+                    <tr>
+                        <td style="padding: 3px 6px; font-weight: 600; color: #2c3e50;">{c_id}</td>
+                        <td style="padding: 3px 6px;">School {s.get('school_id')}</td>
+                        <td style="padding: 3px 6px;">{s.get('village')}</td>
+                        <td style="padding: 3px 6px; text-align: right;">{s.get('meals'):,}</td>
+                        <td style="padding: 3px 6px; text-align: right;">{s.get('drive_time')} min</td>
+                    </tr>
+                    """
+
+            corr_html = f'<div style="border-top: 1px solid #cbd5e1; margin-top: 5px;">{rows_html}</div>'
+            
+            school_list_container = f"""
+            <div style="margin-top: 15px;">
+                <b style="font-size: 11.5px; color: #34495e;">📋 Assigned Schools Inventory</b>
+                <div style="max-height: 180px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 4px; margin-top: 4px; background-color: transparent;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 10.5px;">
+                        <thead style="position: sticky; top: 0; background-color: #f1f5f9; border-bottom: 1px solid #cbd5e1;">
+                            <tr>
+                                <th style="text-align: left; padding: 4px 6px;">Corridor</th>
+                                <th style="text-align: left; padding: 4px 6px;">School ID</th>
+                                <th style="text-align: left; padding: 4px 6px;">Location</th>
+                                <th style="text-align: right; padding: 4px 6px;">Meals</th>
+                                <th style="text-align: right; padding: 4px 6px;">Drive Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {schools_table_html}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            """
+        else:
+            corr_html = "<p class='text-muted' style='font-size:12px; margin-top:5px;'><i>No distinct corridor clusters identified.</i></p>"
+            school_list_container = ""
+
+        img_b64 = file_to_base64(k.get("map_image_path", ""))
+        overview_b64 = file_to_base64(k.get("overview_map_path", ""))
+
+        p_obj = {
+            "codename": codename,
+            "typology": k.get("typology", "N/A"),
+            "district": k.get("district", "N/A"),
+            "sector": k.get("sector", "N/A"),
+            "cell": k.get("cell", "N/A"),
+            "village": k.get("village", "N/A"),
+            "coords": f"{k.get('latitude', 'N/A')}°, {k.get('longitude', 'N/A')}°",
+            "meals": f"{k.get('daily_meals', 0):,}",
+            "size_band": k.get("size_band", "N/A"),
+            "schools": k.get("schools_served", 0),
+            "avg_time": k.get("avg_drive_time_min", 0.0),
+            "max_time": k.get("max_drive_time_min", 0.0),
+            "img_path": img_b64,
+            "overview_path": overview_b64,
+            "corr_html": corr_html,
+            "schools_html": school_list_container
+        }
+        profile_data[key] = p_obj
+        if idx == 0:
+            first_profile = p_obj
+
+    # Base64 encode JSON payload to prevent string breaking
+    raw_json_bytes = json.dumps(profile_data).encode('utf-8')
+    b64_json = base64.b64encode(raw_json_bytes).decode('utf-8')
+
+    init_overview = first_profile["overview_path"] if first_profile else ""
+    init_cluster = first_profile["img_path"] if first_profile else ""
+    init_codename = first_profile["codename"] if first_profile else "--"
+    init_typology = first_profile["typology"] if first_profile else "--"
+    init_district = first_profile["district"] if first_profile else "--"
+    init_sector = first_profile["sector"] if first_profile else "--"
+    init_cell = first_profile["cell"] if first_profile else "--"
+    init_village = first_profile["village"] if first_profile else "--"
+    init_coords = first_profile["coords"] if first_profile else "--"
+    init_meals = first_profile["meals"] if first_profile else "--"
+    init_size = first_profile["size_band"] if first_profile else "--"
+    init_schools = first_profile["schools"] if first_profile else "--"
+    init_time = f"{first_profile['avg_time']} min / {first_profile['max_time']} min" if first_profile else "--"
+    init_corr = first_profile["corr_html"] if first_profile else ""
+    init_sch_list = first_profile["schools_html"] if first_profile else ""
+
+    html_output = f"""
+    <div id="kitchen-selector-container" style="background-color: transparent; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px 18px; margin-bottom: 25px; display: flex; align-items: center; gap: 15px;">
+        <label for="kitchenSelector" style="font-weight: bold; font-size: 13px; margin: 0; color: #2c3e50;">
+            📍 Select Kitchen Profile:
+        </label>
+        <select id="kitchenSelector" onchange="updateKitchenCard(this.value)" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #ced4da; font-size: 13px; max-width: 450px; cursor: pointer; background-color: transparent;">
+            {options_html}
+        </select>
+        <span id="cardCounter" style="font-size: 12px; color: #6c757d; margin-left: auto;">
+            Showing kitchen profile
+        </span>
+    </div>
+
+    <!-- Quarto Margin Map Container -->
+    <div class="column-margin">
+        <div style="border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; background-color: transparent; margin-top: 5px; text-align: center;">
+            <b style="color: #1e293b; font-size: 11px; display: block; margin-bottom: 6px;">📍 National Context</b>
+            <img id="k-overview-img" src="{init_overview}" style="width: 100%; max-width: 180px; height: auto; border-radius: 4px; border: 1px solid #e2e8f0;" alt="Overview Map">
+            <p style="margin: 6px 0 0 0; font-size: 10.5px; color: #64748b; line-height: 1.3;">
+                Kitchen located in<br><b id="k-margin-district">{init_district} District</b>
+            </p>
+        </div>
+    </div>
+
+    <!-- Quarto Body Card Container -->
+    <div class="column-body" style="margin-bottom: 25px;">
+        <div style="border: 1px solid #cbd5e1; border-radius: 8px; padding: 18px; background-color: transparent; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
+            <div style="border-bottom: 2px solid #2c3e50; padding-bottom: 8px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                <h3 id="k-codename" style="margin:0; font-size: 18px; color: #2c3e50; font-weight: bold;">{init_codename}</h3>
+                <span id="k-typology" style="background-color: #2c3e50; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;">{init_typology}</span>
+            </div>
+            
+            <p style="margin: 0 0 15px 0; font-size: 12px; color: #555;">
+                <b>District:</b> <span id="k-district">{init_district}</span> &nbsp;|&nbsp; 
+                <b>Sector:</b> <span id="k-sector">{init_sector}</span> &nbsp;|&nbsp; 
+                <b>Cell:</b> <span id="k-cell">{init_cell}</span> &nbsp;|&nbsp; 
+                <b>Village:</b> <span id="k-village">{init_village}</span> &nbsp;|&nbsp; 
+                <b>Coords:</b> <span id="k-coords">{init_coords}</span>
+            </p>
+
+            <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: start;">
+                <div style="flex: 1; min-width: 260px; text-align: center;">
+                    <img id="k-cluster-img" src="{init_cluster}" style="width: 100%; max-width: 380px; height: auto; border: 1px solid #e2e8f0; border-radius: 6px;" alt="Cluster map">
+                </div>
+                
+                <div style="flex: 1.2; min-width: 280px;">
+                    <h4 style="font-size: 13px; font-weight: bold; margin-top: 0; margin-bottom: 8px; color: #34495e;">Operational Summary</h4>
+                    
+                    <div style="font-size: 12px; display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px;">
+                        <div style="display:flex; justify-content:space-between; border-bottom: 1px dotted #cbd5e1; padding-bottom: 3px;">
+                            <b>Daily Meal Target:</b> <span id="k-meals">{init_meals} meals/day</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; border-bottom: 1px dotted #cbd5e1; padding-bottom: 3px;">
+                            <b>Capacity Band:</b> <span id="k-size-band">{init_size}</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; border-bottom: 1px dotted #cbd5e1; padding-bottom: 3px;">
+                            <b>Schools Served:</b> <span id="k-schools">{init_schools} schools</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; border-bottom: 1px dotted #cbd5e1; padding-bottom: 3px;">
+                            <b>Drive Time (Avg / Max):</b> <span id="k-drive-time">{init_time}</span>
+                        </div>
+                    </div>
+
+                    <h4 style="font-size: 13px; font-weight: bold; margin-bottom: 6px; color: #34495e;">Corridor Demand Breakdown</h4>
+                    <div id="k-corridor-container">{init_corr}</div>
+                    <div id="k-schools-container">{init_sch_list}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    var kitchenProfiles = JSON.parse(atob("{b64_json}"));
+
+    function updateKitchenCard(selectedKey) {{
+        var data = kitchenProfiles[selectedKey];
+        if (!data) return;
+
+        document.getElementById('k-codename').innerText = data.codename;
+        document.getElementById('k-typology').innerText = data.typology;
+        document.getElementById('k-district').innerText = data.district;
+        document.getElementById('k-margin-district').innerText = data.district + ' District';
+        document.getElementById('k-sector').innerText = data.sector;
+        document.getElementById('k-cell').innerText = data.cell;
+        document.getElementById('k-village').innerText = data.village;
+        document.getElementById('k-coords').innerText = data.coords;
+        document.getElementById('k-meals').innerText = data.meals + ' meals/day';
+        document.getElementById('k-size-band').innerText = data.size_band;
+        document.getElementById('k-schools').innerText = data.schools + ' schools';
+        document.getElementById('k-drive-time').innerText = data.avg_time + ' min / ' + data.max_time + ' min';
+
+        var overviewImg = document.getElementById('k-overview-img');
+        var clusterImg = document.getElementById('k-cluster-img');
+
+        if (overviewImg) {{
+            overviewImg.src = data.overview_path;
+        }}
+        if (clusterImg) {{
+            clusterImg.src = data.img_path;
+        }}
+
+        document.getElementById('k-corridor-container').innerHTML = data.corr_html;
+        document.getElementById('k-schools-container').innerHTML = data.schools_html;
+    }}
+    </script>
+    """
+    display(HTML(html_output))
+else:
+    display(HTML("<p><i>Kitchen profiles metadata not found. Please run generate_assets.py first.</i></p>"))
+
+```
+
+
+## Meal Delivery Simulation
+
+*Operational Assumptions:* Dispatch begins strictly at 06:00 from the central kitchen, with all meals required to be delivered, offloaded, and signed for before the 12:00 PM pre-lunch deadline, giving a 6-hour operational window. A fixed fleet of 5 Light Commercial/Canter Trucks (1.5–2.5-ton capacity) departs simultaneously at 06:00, with capacity assumed sufficient for a single morning run (no mid-morning reload trips). A fixed 10-minute dwell time is enforced at every school stop for parking, offloading, sign-off, and driver handoffs, and vehicles travel sequentially along mapped road polylines with waypoints interpolated between stops based on calculated arrival and departure schedules.
+
+*Speed Logic & Playback:* Travel times are grounded in realistic physics—road classification speed caps (including a 25 km/h cap on unpaved feeder roads per World Bank HDM-4 standards) and grade slope penalties that reduce heavy commercial vehicle speeds on steep uphill gradients—combined with the 10-minute dwell times to calculate exact arrival and departure timestamps. For visual playback, time is compressed: at 1x speed, 1 real-world second equals 2.5 simulated minutes (full 6-hour dispatch in ~2.4 minutes); at 2x, 1 second equals 5 simulated minutes (~1.2 minutes total); and at 5x, 1 second equals 12.5 simulated minutes (~30 seconds total).
+
+::: {.column-page}
+
+```{python}
+#| label: dispatch-simulation-frame
+#| echo: false
+#| output: asis
+
+from IPython.display import display, HTML
+
+display(HTML('<iframe src="./output/dispatch_simulation.html" width="100%" height="600px" style="border:1px solid #cbd5e1; border-radius:8px;" loading="lazy"></iframe>'))
+
+```
+:::
+
+## Limitations and Assumptions
+
+Every figure in this assessment rests on assumptions that are worth stating plainly, because they are also the levers for challenging the analysis.
+
+1. Some schools are missing entirely. Solid'Africa has indicated that roughly 300 public schools did not have Ministry-supplied location and could not be placed on a map. Therefore, the findings of this analysis should serve as a floor and not the final output. The true figures might be higher.
+
+2. Road surfaces were assumed, not observed. Every drive time caps speed on any road identified as unpaved (Section 2.2), but not one road segment in this network carries an actual surface tag. The cap is applied wherever a minor road class makes unpaved the safer assumption, not because a survey confirmed it. If actual surface conditions differ systematically from this assumption, drive times will be affected.
+
+3. A school with no mapped road nearby was snapped to the closest existing road, however far that really is. In the analysis, 62 schools snapped more than a kilometre from the nearest mapped road, with the furthest at 2,397 metres. These schools' drive times should be treated with caution pending field verification. @tbl-snapped-schools lists the five schools that snap more than 2,000 metres from a mapped road; these are a stricter subset of the 62 schools past the 1 km mark.
+
+```{python}
+#| label: tbl-snapped-schools
+#| tbl-cap: "Top 5 Schools Snapped Furthest From Mapped Access Roads (>2,000 m)"
+#| echo: false
+
+import pandas as pd
+from IPython.display import display, HTML
+
+# Snapped schools data
+snapped_schools = pd.DataFrame({
+    "School ID": ["mineduc-571409", "mineduc-320102", "mineduc-361307", "mineduc-540616", "mineduc-330518"],
+    "Spatial Warning": ["snapped_far_from_road", "snapped_far_from_road", "snapped_far_from_road", "snapped_far_from_road", "snapped_far_from_road"],
+    "Snap Distance (m)": [2396.8, 2346.7, 2332.3, 2124.8, 2084.2]
+})
+
+# Format distance with commas and 1 decimal place
+snapped_schools["Snap Distance (m)"] = snapped_schools["Snap Distance (m)"].apply(lambda x: f"{x:,.1f}")
+
+display(HTML(snapped_schools.to_html(index=False, classes="table table-striped table-hover table-sm")))
+
+```
+
+4. Section 6's corridor counts are a minimum for simultaneous routes. Converting them into a fleet size requires operational data not included in this dataset, such as vehicle counts, capacity, loading time, and delivery windows.

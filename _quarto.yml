@@ -1,0 +1,26 @@
+# _quarto.yml
+project:
+  type: website
+  output-dir: _site     # Quarto outputs HTML build here for easy GitHub Pages deployment
+
+format:
+  html:
+    theme: tufte
+    toc: true
+    toc-location: left
+    navibar: false
+    search: false
+    number-sections: true
+    code-fold: true
+    code-summary: "Show Python Code"
+    self-contained: false # Set to false so embedded HTML/Leaflet map assets load cleanly
+    mainfont: "Et-Book, Palatino, Georgia, serif"
+    monofont: "Consolas, Monaco, monospace"
+    css: styles.css
+    embed-resources: false
+    page-layout: article
+
+execute:
+  echo: true
+  warning: false
+  message: false
