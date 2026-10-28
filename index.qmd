@@ -1,6 +1,6 @@
 ---
 title: "Rwanda Centralized School Feeding Kitchen Placement Analysis"
-subtitle: "Spatial Analysis for Central Kitchen Network Using a 40-Minute Drive Time Threshold"
+subtitle: "Spatial Analysis for Rwanda's Central Kitchen Network Using a 40-Minute Drive Time Threshold"
 author: "Agazi Fitsum, MD"
 date: last-modified
 format:
@@ -313,7 +313,7 @@ display(HTML('<iframe src="./output/40min_interactive_map_schools_kitchens.html"
 
 #### Corridor Overview
 
-The interactive map below allows filtering of delivery routes and supporting school clusters broken down by individual kitchen network corridors.
+The interactive map below allows filtering of delivery routes and school clusters broken down by individual kitchen network corridors.
 
 ```{python}
 #| label: corridor-findings-text

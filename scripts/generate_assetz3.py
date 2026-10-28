@@ -21,7 +21,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # Base Output Folder
-OUTPUT_DIR = "./output"
+OUTPUT_DIR = "./docs/output"
 PROFILES_DIR = os.path.join(OUTPUT_DIR, "profiles")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(PROFILES_DIR, exist_ok=True)

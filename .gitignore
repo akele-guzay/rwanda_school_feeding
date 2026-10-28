@@ -14,3 +14,7 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Some files that are too large to update
+./data/villages.gpkg
+./data/districts.gpkg 
